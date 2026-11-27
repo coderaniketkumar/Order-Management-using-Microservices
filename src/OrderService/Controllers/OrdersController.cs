@@ -2,6 +2,7 @@
 using Microsoft.EntityFrameworkCore;
 using OrderService.Clients;
 using OrderService.Data;
+using OrderService.Messaging;
 using OrderService.Models;
 
 namespace OrderService.Controllers;
@@ -12,11 +13,16 @@ public class OrdersController : ControllerBase
 {
     private readonly OrderDbContext _db;
     private readonly ProductServiceClient _products;
+    private readonly IEventPublisher _events;
+    private readonly ILogger<OrdersController> _logger;
 
-    public OrdersController(OrderDbContext db, ProductServiceClient products)
+    public OrdersController(OrderDbContext db, ProductServiceClient products,
+        IEventPublisher events, ILogger<OrdersController> logger)
     {
         _db = db;
         _products = products;
+        _events = events;
+        _logger = logger;
     }
 
     [HttpGet]
@@ -68,6 +74,18 @@ public class OrdersController : ControllerBase
 
         _db.Orders.Add(order);
         await _db.SaveChangesAsync(ct);
+
+        try
+        {
+            // CancellationToken.None: order save ho chuka hai, client request cancel ho jaaye tab bhi event bhejna hai
+            await _events.PublishAsync(Queues.OrderPlaced,
+                new OrderPlacedEvent(order.Id, order.ProductId, order.Quantity, DateTime.UtcNow),
+                CancellationToken.None);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Order {OrderId} saved but OrderPlaced event could not be published.", order.Id);
+        }
 
         return CreatedAtAction(nameof(GetById), new { id = order.Id }, order);
     }
